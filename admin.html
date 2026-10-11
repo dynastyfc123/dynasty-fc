@@ -1,0 +1,423 @@
+
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#080b12">
+<title>Administración | DYNASTY FC</title>
+<style>
+:root{color-scheme:dark;--bg:#080b12;--panel:#111827;--gold:#e8bd62;--muted:#9ca8ba;--line:#283449}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:#f5f7fb;font-family:Arial,sans-serif}
+header{padding:24px 18px;background:linear-gradient(135deg,#111827,#080b12);border-bottom:1px solid #725a2d}
+header h1{margin:0;color:var(--gold);letter-spacing:2px}
+header p{color:var(--muted);margin-bottom:0}
+main{max-width:950px;margin:auto;padding:18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:18px}
+h2{font-size:19px;margin-top:0}
+input,button{font:inherit;border-radius:8px;padding:12px;width:100%;margin:5px 0}
+input{background:#080b12;color:white;border:1px solid #39465c}
+button{background:var(--gold);color:#17130b;border:0;font-weight:bold;cursor:pointer}
+button.secondary{background:#29364b;color:white}
+button.danger{background:#702d38;color:white}
+button:disabled{opacity:.5}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.row>*{flex:1;min-width:100px}
+.item{padding:13px 0;border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.item:last-child{border-bottom:0}
+.muted{color:var(--muted);font-size:13px}
+#status{padding:12px;border-radius:8px;margin-bottom:15px;overflow-wrap:anywhere}
+.hidden{display:none!important}
+</style>
+</head>
+<body>
+<header>
+<h1>DYNASTY FC</h1>
+<p>Panel privado de administración · Temporada competitiva</p>
+</header>
+
+<main>
+<div id="status" role="status">Conectando con Supabase...</div>
+
+<section class="panel" id="loginPanel">
+<h2>🔐 Acceso de administrador</h2>
+<form id="loginForm">
+<label for="email">Correo electrónico</label>
+<input id="email" type="email" autocomplete="username" required>
+<label for="password">Contraseña</label>
+<input id="password" type="password" autocomplete="current-password" required>
+<button id="loginButton" type="submit">Iniciar sesión</button>
+</form>
+<p class="muted">Usa el usuario que registraste en Supabase Authentication.</p>
+</section>
+
+<div id="dashboard" class="hidden">
+<section class="panel">
+<div class="row">
+<div><h2>⚙️ Administración</h2><p id="account" class="muted"></p></div>
+<div><button class="secondary" id="refreshButton">Actualizar datos</button>
+<button class="danger" id="logoutButton">Cerrar sesión</button></div>
+</div>
+</section>
+
+<section class="panel">
+<h2>📋 Inscripciones pendientes</h2>
+<div id="registrations">Cargando inscripciones...</div>
+</section>
+
+<section class="panel">
+<h2>➕ Añadir jugador al ranking</h2>
+<form id="playerForm">
+<label for="playerName">Nombre del jugador</label>
+<input id="playerName" maxlength="60" required>
+<label for="playerId">ID de FC Mobile</label>
+<input id="playerId" maxlength="100" required>
+<label for="playerPoints">Puntos iniciales</label>
+<input id="playerPoints" type="number" min="0" max="1000000" value="1000" required>
+<button type="submit">Añadir jugador</button>
+</form>
+</section>
+
+<section class="panel">
+<h2>🏆 Gestionar ranking</h2>
+<div id="players">Cargando ranking...</div>
+</section>
+</div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+(() => {
+'use strict';
+
+const SUPABASE_URL = 'https://kessphjbgxrhimsyurha.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_GFtpunKUiQRIHVWRshcFPw_HLdK63Vg';
+
+const statusBox = document.getElementById('status');
+const loginPanel = document.getElementById('loginPanel');
+const dashboard = document.getElementById('dashboard');
+const loginButton = document.getElementById('loginButton');
+let db;
+let currentUser = null;
+let busy = false;
+
+function message(text, error = false) {
+  statusBox.textContent = text;
+  statusBox.style.background = error ? '#51232b' : '#17392d';
+  statusBox.style.color = '#fff';
+  statusBox.classList.remove('hidden');
+}
+
+function safeText(value) {
+  return String(value ?? '');
+}
+
+function makeButton(text, className, handler) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.textContent = text;
+  if (className) button.className = className;
+  button.addEventListener('click', handler);
+  return button;
+}
+
+function addText(parent, text, className = '') {
+  const element = document.createElement('div');
+  element.textContent = text;
+  if (className) element.className = className;
+  parent.appendChild(element);
+  return element;
+}
+
+async function checkAdmin() {
+  const { data: { session }, error } = await db.auth.getSession();
+  if (error) throw error;
+
+  if (!session) {
+    currentUser = null;
+    showLoggedOut();
+    return false;
+  }
+
+  const { data, error: adminError } = await db.rpc('is_admin');
+  if (adminError) throw adminError;
+
+  if (data !== true) {
+    await db.auth.signOut();
+    currentUser = null;
+    showLoggedOut();
+    message('Esta cuenta no tiene permisos de administrador.', true);
+    return false;
+  }
+
+  currentUser = session.user;
+  loginPanel.classList.add('hidden');
+  dashboard.classList.remove('hidden');
+  document.getElementById('account').textContent =
+    'Sesión iniciada: ' + currentUser.email;
+  return true;
+}
+
+function showLoggedOut() {
+  loginPanel.classList.remove('hidden');
+  dashboard.classList.add('hidden');
+}
+
+async function loadRegistrations() {
+  const container = document.getElementById('registrations');
+  container.replaceChildren();
+  addText(container, 'Cargando...');
+
+  const { data, error } = await db.from('registrations')
+    .select('id,player_name,whatsapp,fc_mobile_id,status,created_at')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true });
+
+  container.replaceChildren();
+  if (error) throw error;
+
+  if (!data.length) {
+    addText(container, 'No hay inscripciones pendientes.');
+    return;
+  }
+
+  data.forEach(reg => {
+    const item = document.createElement('div');
+    item.className = 'item';
+    addText(item, safeText(reg.player_name));
+    addText(item, 'ID FC Mobile: ' + safeText(reg.fc_mobile_id));
+    addText(item, 'WhatsApp: ' + safeText(reg.whatsapp), 'muted');
+    addText(item, 'Estado: ' + safeText(reg.status), 'muted');
+
+    const actions = document.createElement('div');
+    actions.className = 'row';
+
+    actions.appendChild(makeButton('Aprobar', '', async () => {
+      if (!confirm('¿Aprobar esta inscripción y añadir al jugador al ranking con 1000 puntos?')) return;
+      try {
+        const { error: insertError } = await db.from('players').insert({
+          display_name: reg.player_name,
+          fc_mobile_id: reg.fc_mobile_id,
+          points: 1000
+        });
+        if (insertError) throw insertError;
+
+        const { error: updateError } = await db.from('registrations')
+          .update({ status: 'approved' }).eq('id', reg.id);
+        if (updateError) {
+          message('El jugador se añadió, pero no se pudo actualizar la inscripción. Revisa la lista.', true);
+          await loadPlayers();
+          await loadRegistrations();
+          return;
+        }
+
+        message('Inscripción aprobada y jugador añadido al ranking.');
+        await loadAll();
+      } catch (e) {
+        message('No se pudo aprobar. Puede que el ID ya exista. Detalle: ' + e.message, true);
+      }
+    }));
+
+    actions.appendChild(makeButton('Rechazar', 'danger', async () => {
+      if (!confirm('¿Rechazar esta inscripción?')) return;
+      try {
+        const { error } = await db.from('registrations')
+          .update({ status: 'rejected' }).eq('id', reg.id);
+        if (error) throw error;
+        message('Inscripción rechazada.');
+        await loadRegistrations();
+      } catch (e) {
+        message('No se pudo rechazar: ' + e.message, true);
+      }
+    }));
+
+    item.appendChild(actions);
+    container.appendChild(item);
+  });
+}
+
+async function loadPlayers() {
+  const container = document.getElementById('players');
+  container.replaceChildren();
+  addText(container, 'Cargando ranking...');
+
+  const { data, error } = await db.from('players')
+    .select('id,display_name,fc_mobile_id,points')
+    .order('points', { ascending: false });
+
+  container.replaceChildren();
+  if (error) throw error;
+
+  if (!data.length) {
+    addText(container, 'Todavía no hay jugadores en el ranking.');
+    return;
+  }
+
+  data.forEach(player => {
+    const item = document.createElement('div');
+    item.className = 'item';
+    addText(item, safeText(player.display_name));
+    addText(item, 'ID: ' + safeText(player.fc_mobile_id), 'muted');
+
+    const controls = document.createElement('div');
+    controls.className = 'row';
+
+    const points = document.createElement('input');
+    points.type = 'number';
+    points.min = '0';
+    points.max = '1000000';
+    points.value = player.points;
+    points.setAttribute('aria-label', 'Puntos de ' + player.display_name);
+
+    controls.appendChild(points);
+    controls.appendChild(makeButton('Guardar puntos', '', async () => {
+      const value = Number(points.value);
+      if (!Number.isInteger(value) || value < 0 || value > 1000000) {
+        message('Introduce puntos enteros entre 0 y 1000000.', true);
+        return;
+      }
+      try {
+        const { error } = await db.from('players')
+          .update({ points: value }).eq('id', player.id);
+        if (error) throw error;
+        message('Puntos actualizados.');
+        await loadPlayers();
+      } catch (e) {
+        message('No se pudieron guardar los puntos: ' + e.message, true);
+      }
+    }));
+
+    controls.appendChild(makeButton('Eliminar', 'danger', async () => {
+      if (!confirm('¿Eliminar a ' + player.display_name + ' del ranking?')) return;
+      try {
+        const { error } = await db.from('players').delete().eq('id', player.id);
+        if (error) throw error;
+        message('Jugador eliminado del ranking.');
+        await loadPlayers();
+      } catch (e) {
+        message('No se pudo eliminar: ' + e.message, true);
+      }
+    }));
+
+    item.appendChild(controls);
+    container.appendChild(item);
+  });
+}
+
+async function loadAll() {
+  if (busy) return;
+  busy = true;
+  try {
+    if (!await checkAdmin()) return;
+    await Promise.all([loadRegistrations(), loadPlayers()]);
+    message('Datos actualizados correctamente.');
+  } catch (e) {
+    message('Error al cargar datos: ' + e.message, true);
+  } finally {
+    busy = false;
+  }
+}
+
+document.getElementById('loginForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  loginButton.disabled = true;
+  message('Comprobando acceso...');
+  try {
+    const { error } = await db.auth.signInWithPassword({
+      email: document.getElementById('email').value.trim(),
+      password: document.getElementById('password').value
+    });
+    if (error) throw error;
+
+    if (await checkAdmin()) {
+      message('Acceso de administrador confirmado.');
+      await loadAll();
+    }
+  } catch (e) {
+    message('No se pudo iniciar sesión: ' + e.message, true);
+  } finally {
+    loginButton.disabled = false;
+  }
+});
+
+document.getElementById('playerForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  try {
+    if (!await checkAdmin()) return;
+
+    const name = document.getElementById('playerName').value.trim();
+    const fcId = document.getElementById('playerId').value.trim();
+    const points = Number(document.getElementById('playerPoints').value);
+
+    if (!name || !fcId || !Number.isInteger(points) ||
+        points < 0 || points > 1000000) {
+      message('Revisa el nombre, el ID y los puntos.', true);
+      return;
+    }
+
+    const { error } = await db.from('players').insert({
+      display_name: name, fc_mobile_id: fcId, points
+    });
+    if (error) throw error;
+
+    document.getElementById('playerForm').reset();
+    document.getElementById('playerPoints').value = 1000;
+    message('Jugador añadido al ranking.');
+    await loadPlayers();
+  } catch (e) {
+    message('No se pudo añadir el jugador: ' + e.message, true);
+  }
+});
+
+document.getElementById('refreshButton').addEventListener('click', loadAll);
+
+document.getElementById('logoutButton').addEventListener('click', async () => {
+  const { error } = await db.auth.signOut();
+  if (error) {
+    message('No se pudo cerrar sesión: ' + error.message, true);
+    return;
+  }
+  showLoggedOut();
+  message('Sesión cerrada.');
+});
+
+async function init() {
+  if (!window.supabase) {
+    message('No se pudo cargar Supabase. Comprueba tu conexión a Internet.', true);
+    return;
+  }
+
+  db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true
+    }
+  });
+
+  db.auth.onAuthStateChange((event, session) => {
+    if (event === 'SIGNED_OUT' || !session) {
+      currentUser = null;
+      showLoggedOut();
+    }
+  });
+
+  try {
+    if (await checkAdmin()) {
+      await loadAll();
+    } else {
+      message('Inicia sesión para administrar DYNASTY FC.');
+    }
+  } catch (e) {
+    showLoggedOut();
+    message('No se pudo verificar el acceso. Comprueba las políticas y la conexión: ' + e.message, true);
+  }
+}
+
+init();
+})();
+</script>
+</body>
+  </html>
+  
